@@ -1,0 +1,25 @@
+group 'com.alekseysamoylov.widget'
+version '1.0-SNAPSHOT'
+
+apply plugin: 'java'
+apply plugin: 'war'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    def springBootVersion = '1.5.3.RELEASE'
+    def testNgVersion = '6.9.10'
+
+    // Spring
+    compile("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
+    compile("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
+
+    // Testing
+    testCompile "org.testng:testng:$testNgVersion"
+    testCompile("org.springframework.boot:spring-boot-starter-test:$springBootVersion")
+
+}
