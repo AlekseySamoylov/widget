@@ -17,7 +17,6 @@
                 };
 
                 $scope.getInterval = function () {
-                    console.log("hello interval get");
                     return $scope.logInterval;
                 };
 
