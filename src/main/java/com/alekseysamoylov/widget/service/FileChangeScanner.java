@@ -4,6 +4,7 @@ import com.alekseysamoylov.widget.exception.LogWidgetCriticalException;
 import com.alekseysamoylov.widget.exception.LogWidgetException;
 import com.alekseysamoylov.widget.utils.CustomLogger;
 import com.alekseysamoylov.widget.utils.FileUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -11,7 +12,6 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
-import javax.annotation.PreDestroy;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
@@ -26,9 +26,6 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Optional;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import static com.alekseysamoylov.widget.constants.FileScannerConstants.*;
 
@@ -37,10 +34,14 @@ public class FileChangeScanner {
 
     private static final CustomLogger LOGGER = new CustomLogger();
 
-    private static volatile boolean applicationIsRunning = false;
     private static volatile String filePath = STANDARD_LOG_PATH;
     private volatile Integer interval = STANDARD_INTERVAL;
-    private ExecutorService executorService;
+    private FolderScannerAsyncService folderScannerAsyncService;
+
+    @Autowired
+    public FileChangeScanner(FolderScannerAsyncService folderScannerAsyncService) {
+        this.folderScannerAsyncService = folderScannerAsyncService;
+    }
 
     public static String getFilePathForLogger() {
         return filePath;
@@ -64,22 +65,6 @@ public class FileChangeScanner {
     /**
      * Stop the file scanning thread
      */
-    @PreDestroy
-    public void shutDown() {
-        applicationIsRunning = false;
-        executorService.shutdown();
-        try {
-            if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                LOGGER.warn("Still waiting after 5seconds: calling System.exit(0)...");
-
-                System.exit(0);
-            }
-            executorService.shutdownNow();
-        } catch (InterruptedException e) {
-              System.exit(0);
-        }
-    }
-
     private void setFilePathToLogger(String filePath) throws LogWidgetException {
         createLogFile(filePath);
         this.filePath = filePath;
@@ -87,7 +72,7 @@ public class FileChangeScanner {
 
     private void checkToStart() {
         Path configurationFilePath = Paths.get(CONFIGURATION_FILE_PATH);
-        if (!applicationIsRunning) {
+        if (!folderScannerAsyncService.isRunning()) {
             try {
                 if (Files.exists(configurationFilePath)) {
                     fillLogWidget(configurationFilePath);
@@ -97,27 +82,25 @@ public class FileChangeScanner {
             } catch (ParserConfigurationException | LogWidgetException e) {
                 LOGGER.error("Something was wrong with first reading log-widget.xml " + e.getMessage());
             }
+
             synchronized (this) {
-                if (!applicationIsRunning) {
-                    applicationIsRunning = true;
-
-                    executorService = Executors.newSingleThreadExecutor();
-
-                    executorService.execute(() -> {
-                        try {
-                            getFileToSearchChangesParseAndFillIpList(configurationFilePath);
-                        } catch (IOException | InterruptedException | LogWidgetException | ParserConfigurationException e) {
-                            applicationIsRunning = false;
-                            LOGGER.error("Something was wrong in working with Log widget properties " + e.getMessage());
-                            throw new LogWidgetCriticalException("Something was wrong in working with Log widget properties ", e);
-                        }
-                    });
+                if (!folderScannerAsyncService.isRunning()) {
+                    try {
+                        folderScannerAsyncService.startScan(this, configurationFilePath);
+                    } catch (IOException | InterruptedException | LogWidgetException | ParserConfigurationException e) {
+                        folderScannerAsyncService.stopScanner();
+                        LOGGER.error("Something was wrong in working with Log widget properties " + e.getMessage());
+                        throw new LogWidgetCriticalException("Something was wrong in working with Log widget properties ", e);
+                    }
                 }
+
             }
+
+
         }
 
         if (!Files.exists(configurationFilePath)) {
-            applicationIsRunning = false;
+            folderScannerAsyncService.stopScanner();
         }
 
     }
@@ -128,62 +111,51 @@ public class FileChangeScanner {
         try {
             NodeList pathNodeList = (NodeList) xPath.compile(PATH_ELEMENT_EXPRESSION)
                     .evaluate(document, XPathConstants.NODESET);
-                Node pathNode = pathNodeList.item(0);
+            Node pathNode = pathNodeList.item(0);
 
-                if (pathNode.getNodeType() == Node.ELEMENT_NODE) {
-                    Element eElement = (Element) pathNode;
-                    String path = eElement
-                            .getTextContent();
-                    setFilePathToLogger(path);
-                }
+            if (pathNode.getNodeType() == Node.ELEMENT_NODE) {
+                Element eElement = (Element) pathNode;
+                String path = eElement
+                        .getTextContent();
+                setFilePathToLogger(path);
+            }
 
             NodeList intervalNodeList = (NodeList) xPath.compile(INTERVAL_ELEMENT_EXPRESSION)
                     .evaluate(document, XPathConstants.NODESET);
-                Node intervalNode = intervalNodeList.item(0);
+            Node intervalNode = intervalNodeList.item(0);
 
-                if (intervalNode.getNodeType() == Node.ELEMENT_NODE) {
-                    Element eElement = (Element) intervalNode;
-                    Integer interval = Integer.valueOf(eElement
-                            .getTextContent());
-                    setInterval(interval);
-                }
+            if (intervalNode.getNodeType() == Node.ELEMENT_NODE) {
+                Element eElement = (Element) intervalNode;
+                Integer interval = Integer.valueOf(eElement
+                        .getTextContent());
+                setInterval(interval);
+            }
 
         } catch (XPathExpressionException e) {
             LOGGER.error(e.getMessage());
         }
     }
 
-    private void getFileToSearchChangesParseAndFillIpList(Path logWidgetPath)
-            throws IOException, InterruptedException, LogWidgetException, ParserConfigurationException {
 
-        try (final WatchService watchService = FileSystems.getDefault().newWatchService()) {
-            Path parentDirectories = logWidgetPath.getParent();
-            if (parentDirectories != null) {
-                logWidgetPath.getParent().register(watchService, StandardWatchEventKinds.ENTRY_MODIFY);
-            }
-            while (applicationIsRunning) {
-                final WatchKey innerWatchKey = watchService.take();
-                for (WatchEvent<?> event : innerWatchKey.pollEvents()) {
-                    //we only register "ENTRY_MODIFY" so the context is always a Path.
-                    final Path changed = (Path) event.context();
-                    String logWidgetFileName = logWidgetPath.getFileName().toString();
-                    if (changed.endsWith(logWidgetFileName)) {
-                        LOGGER.info("Logger.info: log-widget.xml was changed. " +
-                                LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE));
-                        fillLogWidget(logWidgetPath);
-                    }
-                }
-                // reset the key
-                boolean valid = innerWatchKey.reset();
-                if (!valid) {
-                    LOGGER.error("Key has been unregisterede");
-                }
-            }
-            if (!applicationIsRunning) {
-                Thread.currentThread().interrupt();
+    void watchFolderIteration(WatchService watchService, Path logWidgetPath) throws InterruptedException, ParserConfigurationException, LogWidgetException {
+        final WatchKey innerWatchKey = watchService.take();
+        for (WatchEvent<?> event : innerWatchKey.pollEvents()) {
+            //we only register "ENTRY_MODIFY" so the context is always a Path.
+            final Path changed = (Path) event.context();
+            String logWidgetFileName = logWidgetPath.getFileName().toString();
+            if (changed.endsWith(logWidgetFileName)) {
+                LOGGER.info("Logger.info: log-widget.xml was changed. " +
+                        LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE));
+                fillLogWidget(logWidgetPath);
             }
         }
+
+        boolean valid = innerWatchKey.reset();
+        if (!valid) {
+            LOGGER.error("Key has been unregisterede");
+        }
     }
+
 
     private void fillLogWidget(Path logWidgetPath) throws ParserConfigurationException, LogWidgetException {
         DocumentBuilderFactory documentBuilderFactory
@@ -207,11 +179,11 @@ public class FileChangeScanner {
         if (documentOptional.isPresent()) {
             Document document = documentOptional.get();
             document.getDocumentElement().normalize();
-            
+
             fillFieldsFromDocument(document);
 
             LOGGER.warn("Log widget properties readed from file: ");
-            
+
 
         }
     }

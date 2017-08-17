@@ -13,13 +13,24 @@ repositories {
 dependencies {
     def springBootVersion = '1.5.3.RELEASE'
     def testNgVersion = '6.9.10'
+    def log4jVersion = '2.8.2'
 
     // Spring
     compile("org.springframework.boot:spring-boot-autoconfigure:$springBootVersion")
     compile("org.springframework.boot:spring-boot-starter-web:$springBootVersion")
+    compile("org.springframework.boot:spring-boot-starter-logging:$springBootVersion")
+
+    // to run on WildFly
+    providedCompile("org.springframework.boot:spring-boot-starter-undertow:$springBootVersion")
+    compile("org.springframework.boot:spring-boot-starter-websocket:$springBootVersion")
+    providedCompile("org.apache.tomcat.embed:tomcat-embed-websocket:8.5.15")
+    providedCompile("org.springframework.boot:spring-boot-starter-tomcat:$springBootVersion")
 
     // Testing
     testCompile "org.testng:testng:$testNgVersion"
     testCompile("org.springframework.boot:spring-boot-starter-test:$springBootVersion")
+
+    // Logging
+    compile("org.apache.logging.log4j:log4j-core:$log4jVersion")
 
 }
